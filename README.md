@@ -2,6 +2,8 @@
 
 A starter security scanner for Model Context Protocol servers. It enumerates MCP tools and reports potential security risks, misconfigurations, and weak schemas.
 
+**In Progress*. Long wishlist of improvements to come.
+
 ## Install
 
 ```powershell
