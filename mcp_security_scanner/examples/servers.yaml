@@ -1,0 +1,9 @@
+servers:
+  - name: mock-stdio
+    transport: stdio
+    command: "python examples/mock_mcp_server.py"
+  - name: remote-example
+    transport: http
+    url: "https://example.com/mcp"
+    headers:
+      X-Example: demo

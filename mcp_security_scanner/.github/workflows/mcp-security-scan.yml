@@ -1,0 +1,285 @@
+name: MCP Security Scan
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      transport:
+        description: "Transport to scan: stdio, http, or config"
+        required: true
+        default: "stdio"
+        type: choice
+        options:
+          - stdio
+          - http
+          - config
+      target_name:
+        description: "Target name (used for stdio/http)"
+        required: false
+        default: "manual-target"
+      target_value:
+        description: "Command, URL, or YAML config path"
+        required: true
+        default: "python examples/mock_mcp_server.py"
+      bearer:
+        description: "Bearer token for HTTP scans"
+        required: false
+      include_json:
+        description: "Generate JSON output"
+        required: true
+        default: true
+        type: boolean
+      include_csv:
+        description: "Generate CSV output"
+        required: true
+        default: true
+        type: boolean
+      include_sarif:
+        description: "Generate SARIF output"
+        required: true
+        default: true
+        type: boolean
+      include_excel:
+        description: "Generate Excel output"
+        required: true
+        default: true
+        type: boolean
+      include_zip:
+        description: "Generate ZIP bundle output"
+        required: true
+        default: true
+        type: boolean
+      json_path:
+        description: "JSON output file path"
+        required: false
+        default: "report.json"
+      csv_path:
+        description: "CSV output file path"
+        required: false
+        default: "findings.csv"
+      sarif_path:
+        description: "SARIF output file path"
+        required: false
+        default: "findings.sarif"
+      excel_path:
+        description: "Excel output file path"
+        required: false
+        default: "findings.xlsx"
+      zip_path:
+        description: "ZIP output file path"
+        required: false
+        default: "findings-bundle.zip"
+  workflow_call:
+    inputs:
+      transport:
+        required: true
+        type: string
+      target_name:
+        required: false
+        type: string
+        default: "reusable-target"
+      target_value:
+        required: true
+        type: string
+      bearer:
+        required: false
+        type: string
+      include_json:
+        required: false
+        type: boolean
+        default: true
+      include_csv:
+        required: false
+        type: boolean
+        default: true
+      include_sarif:
+        required: false
+        type: boolean
+        default: true
+      include_excel:
+        required: false
+        type: boolean
+        default: true
+      include_zip:
+        required: false
+        type: boolean
+        default: true
+      json_path:
+        required: false
+        type: string
+        default: "report.json"
+      csv_path:
+        required: false
+        type: string
+        default: "findings.csv"
+      sarif_path:
+        required: false
+        type: string
+        default: "findings.sarif"
+      excel_path:
+        required: false
+        type: string
+        default: "findings.xlsx"
+      zip_path:
+        required: false
+        type: string
+        default: "findings-bundle.zip"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install scanner
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Run scan for PR
+        run: |
+          mcpsecscan stdio pr-mock "python examples/mock_mcp_server.py" \
+            --json report.json \
+            --csv findings.csv \
+            --sarif findings.sarif \
+            --excel findings.xlsx \
+            --zip findings-bundle.zip
+
+      - name: Upload JSON artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-security-bundle
+          path: findings-bundle.zip
+
+      - name: Extract SARIF from ZIP bundle
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+
+          out_dir = Path(".ghas")
+          out_dir.mkdir(exist_ok=True)
+          with zipfile.ZipFile("findings-bundle.zip", "r") as z:
+              z.extract("findings.sarif", out_dir)
+          PY
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .ghas/findings.sarif
+          category: mcpsecscan-pr
+
+  scan-configurable:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install scanner
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Run configurable scan
+        env:
+          TRANSPORT: ${{ inputs.transport }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          TARGET_VALUE: ${{ inputs.target_value }}
+          BEARER: ${{ inputs.bearer }}
+          INCLUDE_JSON: ${{ inputs.include_json }}
+          INCLUDE_CSV: ${{ inputs.include_csv }}
+          INCLUDE_SARIF: ${{ inputs.include_sarif }}
+          INCLUDE_EXCEL: ${{ inputs.include_excel }}
+          INCLUDE_ZIP: ${{ inputs.include_zip }}
+          JSON_PATH: ${{ inputs.json_path }}
+          CSV_PATH: ${{ inputs.csv_path }}
+          SARIF_PATH: ${{ inputs.sarif_path }}
+          EXCEL_PATH: ${{ inputs.excel_path }}
+          ZIP_PATH: ${{ inputs.zip_path }}
+        run: |
+          set -euo pipefail
+          cmd=(mcpsecscan "$TRANSPORT")
+
+          if [ "$TRANSPORT" = "config" ]; then
+            cmd+=("$TARGET_VALUE")
+          else
+            cmd+=("$TARGET_NAME" "$TARGET_VALUE")
+          fi
+
+          if [ "$TRANSPORT" = "http" ] && [ -n "${BEARER:-}" ]; then
+            cmd+=(--bearer "$BEARER")
+          fi
+
+          if [ "$INCLUDE_JSON" = "true" ]; then
+            cmd+=(--json "$JSON_PATH")
+          fi
+          if [ "$INCLUDE_CSV" = "true" ]; then
+            cmd+=(--csv "$CSV_PATH")
+          fi
+          if [ "$INCLUDE_SARIF" = "true" ]; then
+            cmd+=(--sarif "$SARIF_PATH")
+          fi
+          if [ "$INCLUDE_EXCEL" = "true" ]; then
+            cmd+=(--excel "$EXCEL_PATH")
+          fi
+          if [ "$INCLUDE_ZIP" = "true" ]; then
+            cmd+=(--zip "$ZIP_PATH")
+          fi
+
+          echo "Running: ${cmd[*]}"
+          "${cmd[@]}"
+
+      - name: Upload JSON artifact
+        if: inputs.include_zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-security-bundle
+          path: ${{ inputs.zip_path }}
+
+      - name: Extract SARIF from ZIP bundle
+        if: inputs.include_zip && inputs.include_sarif
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          import os
+
+          zip_path = os.environ["ZIP_PATH"]
+          sarif_name = Path(os.environ["SARIF_PATH"]).name
+          out_dir = Path(".ghas")
+          out_dir.mkdir(exist_ok=True)
+          with zipfile.ZipFile(zip_path, "r") as z:
+              sarif_bytes = z.read(sarif_name)
+          (out_dir / "upload.sarif").write_bytes(sarif_bytes)
+          PY
+        env:
+          ZIP_PATH: ${{ inputs.zip_path }}
+          SARIF_PATH: ${{ inputs.sarif_path }}
+
+      - name: Upload SARIF to code scanning
+        if: inputs.include_zip && inputs.include_sarif
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .ghas/upload.sarif
+          category: mcpsecscan-configurable
